@@ -1,7 +1,7 @@
 ---
 id: 061
 title: Connectors research — confirm Google and Dropbox before the build
-status: active
+status: done
 priority: high
 depends_on: []
 created: 2026-10-28
