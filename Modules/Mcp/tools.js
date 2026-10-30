@@ -458,7 +458,7 @@ const answerOf = async (ctx, name, args) => {
     const ready = await readied(ctx, tool, args);
     if (ready.answer) return ready.answer;
     const { params, rule, held } = ready;
-    if (rule.decision !== projectPolicy.DECISION.REFUSE && (held || (v2.enabled() && isDestructive(actions.rating(tool.action))))) {
+    if (rule.decision !== projectPolicy.DECISION.REFUSE && (held || tool.alwaysProposed || (v2.enabled() && isDestructive(actions.rating(tool.action))))) {
         const filed = await propose(ctx, tool, params, str(args.reason, 500) || `${tool.name} via MCP`, held);
         return rule.manyTasks ? afterManyTasks(filed, rule.reason, toolsFor(ctx).some((listed) => listed.batch)) : filed;
     }

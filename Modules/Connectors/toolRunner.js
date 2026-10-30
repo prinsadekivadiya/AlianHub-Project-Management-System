@@ -70,6 +70,45 @@ const requesterFor = (tool, connection) => async (url, options = {}) => {
     return agentFetch.callApi(url, { ...options, token, hosts: tool.definition.egressHosts, timeoutMs: TIMEOUT_MS, maxBytes: MAX_BYTES });
 };
 
+const ownConnection = async (tool, companyId, userId, asked) => {
+    const connection = await connectionOf(tool, companyId, userId);
+    if (asked !== undefined && String(asked) !== String(connection.connectionId)) {
+        throw refusal('not_connected', `That connection is not yours. Leave connectionId out to use your own ${tool.definition.name} connection.`);
+    }
+    if (!(connection.scopes || []).includes(tool.scope)) {
+        throw refusal('scope_missing', `Tick ${tool.product} on your ${tool.definition.name} connection in My connections, then ask again.`);
+    }
+    return connection;
+};
+
+const writeTool = (key) => {
+    const tool = tools.get(key);
+    if (!tool || tool.kind !== tools.KIND.WRITE || !tools.isOn(tool)) throw refusal('tool_off', `${key} is not available here.`);
+    return tool;
+};
+
+/* A write as it is filed and as it is sent: its input checked against the tool's schema, on the owner's own
+ * connection. The stored params keep that connection's id, so a later send to any other is refused. */
+const admitWrite = async ({ companyId, userId, key, input = {} }) => {
+    const tool = writeTool(key);
+    if (!userId) throw refusal('no_person', 'This write names no person, so no connection can be used.');
+    const { connectionId: asked, ...args } = input || {};
+    const problem = argsSchema.problemIn(tool.input, args);
+    if (problem) throw refusal('bad_input', `${key}: ${problem}`);
+    const connection = await ownConnection(tool, companyId, userId, asked);
+    return { tool, args, connection, params: { ...args, connectionId: String(connection.connectionId) } };
+};
+
+/* The one send of an approved write, as the connection's owner, with exactly the params the proposal holds. */
+const write = async ({ companyId, userId, key, params = {} }) => {
+    const { tool, args, connection } = await admitWrite({ companyId, userId, key, input: params });
+    const raw = await egressContext.run(
+        { companyId: String(companyId), actor: String(userId) },
+        () => tool.run({ input: args, connection: { connectionId: connection.connectionId, request: requesterFor(tool, connection) }, caps: { ...tool.caps } }),
+    );
+    return { text: plain(raw).slice(0, tool.caps.maxChars), connectionId: String(connection.connectionId) };
+};
+
 /* One read through a connector tool, for the person a run works for or the person behind an MCP token. Only that
  * person's own connection is used; a connectionId that names any other is refused. */
 const read = async ({ companyId, userId, via, runId = null, key, input = {} }) => {
@@ -82,14 +121,7 @@ const read = async ({ companyId, userId, via, runId = null, key, input = {} }) =
     if (via === VIA.AGENT && !runId) throw refusal('run_required', 'A connected app can be read only while an agent is running.');
     const charsLeft = via === VIA.AGENT ? await charsLeftInRun(companyId, runId) : tool.caps.maxChars;
 
-    const connection = await connectionOf(tool, companyId, userId);
-    if (asked !== undefined && String(asked) !== String(connection.connectionId)) {
-        throw refusal('not_connected', `That connection is not yours. Leave connectionId out to use your own ${tool.definition.name} connection.`);
-    }
-    if (!(connection.scopes || []).includes(tool.scope)) {
-        throw refusal('scope_missing', `Tick ${tool.product} on your ${tool.definition.name} connection in My connections, then ask again.`);
-    }
-
+    const connection = await ownConnection(tool, companyId, userId, asked);
     const maxChars = Math.min(tool.caps.maxChars, charsLeft);
     const raw = await egressContext.run(
         { companyId: String(companyId), actor: String(userId) },
@@ -108,4 +140,4 @@ const read = async ({ companyId, userId, via, runId = null, key, input = {} }) =
     return { text, chars: text.length, truncated: whole.length > text.length, taint: [source] };
 };
 
-module.exports = { VIA, STATE, read, plain };
+module.exports = { VIA, STATE, read, admitWrite, write, plain, refusal };
