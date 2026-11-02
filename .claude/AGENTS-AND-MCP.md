@@ -167,6 +167,8 @@ These are the rules in `Tasks/active/047-ai-run/task.md`, as the code keeps them
 10. **Nothing is auto-approved by default.** Project policy defaults: `done: approval`, `connected: single_task` (`DEFAULTS` in `projectPolicy.js`). A standing approval exists only where a person made it, and can be ended.
 11. **Budgets refuse before the model is called.** Where AlianHub pays for the model, `Modules/Agents/spendGuard.js` stops a run before any tokens are used.
 12. **No web fetch after a connector read.** A run that read a connector fetches nothing from the web afterwards (`taint.js`, `Modules/Agents/connectors/`).
+13. **AI rights come from the role.** Building agents, writing skills, seeing every agent, working with agents, Ask AI, app connectors and connecting your own AI are rows of Security & Permissions (`Config/aiRights.js`, task 060). Owners and admins hold all of them. Check the row in the handler with `aiRights.mayUse()` or `access.agentRightsOf()`, not with `canManageAgents`, unless the thing is an AI setting that stays owner/admin only.
+14. **Only an approved agent runs.** An agent or skill made by anyone but an owner or admin is pending until one of them approves it (`Modules/Agents/agentApproval.js`). `runs.canStart()` refuses a pending or declined agent, and every list that offers agents filters with `APPROVED_CLAUSE`. A new road that starts an agent goes through `canStart()`; a new list that offers one adds the clause and `agentAudience.mayUse()`.
 
 ---
 
@@ -181,7 +183,7 @@ These are the rules in `Tasks/active/047-ai-run/task.md`, as the code keeps them
 | `MCP_TOOLS_WORK` | `Modules/Mcp/workFlag.js` | Tags, relations, lists, doc comments, goals, setup, project create, automation, queue |
 | `MCP_TOOLS_V2` | `Modules/Mcp/v2Flag.js` | Names beside ids, paged lists, annotations, approval for a write that reaches the whole workspace (a goal's target) |
 | `AGENT_PERFORMANCE_READ` | `Modules/Agents/performanceFlag.js` | `performance.read` |
-| `CONNECTORS` | `Modules/Agents/connectors/flag.js` | Slack and Google Calendar connectors |
+| `CONNECTORS` | `Modules/Agents/connectors/flag.js` | Slack and Google Calendar connectors, and with `google` the Google tools for Calendar, Meet and Drive |
 | `AGENT_TAINT_ROUTING` | `Modules/Agents/taint.js` | Risky writes after outside content wait for a person |
 | `MCP_OAUTH` | `Modules/OAuthServer/config.js` | Sign-in for outside MCP clients |
 | `EXTERNAL_AGENT_SESSIONS` | `Modules/AgentSessions/config.js` | Hand a task to an approved outside agent |

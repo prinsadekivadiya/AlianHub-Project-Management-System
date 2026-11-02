@@ -12,6 +12,7 @@ const { dailyRunLimitOf } = require('./dailyRunLimit');
 const { runClause } = require('./privateWork');
 const projectLimits = require('./projectLimits');
 const accounts = require('./accounts');
+const agentApproval = require('./agentApproval');
 const writerLimits = require('../../event/writerLimits');
 
 // Agent runs and spend. A run is the unit the rail footer counts ("2 running"),
@@ -68,6 +69,7 @@ const canStart = async (agent, { trigger, viaAccount, companyId, depth, projectI
     if (!agent) return { ok: false, reason: 'Agent not found.' };
     if (clampDepth(depth) >= MAX_DEPTH) return { ok: false, reason: LOOP_DEPTH_EXCEEDED, code: LOOP_DEPTH_EXCEEDED, depth: clampDepth(depth), maxDepth: MAX_DEPTH };
     if (agent.paused) return { ok: false, reason: `Agent is paused${agent.pausedReason ? ` (${agent.pausedReason})` : ''}.` };
+    if (!agentApproval.isApproved(agent)) return { ok: false, reason: agentApproval.refusalFor(agent), code: agentApproval.AWAITING_APPROVAL };
     if (companyId && await pausedIn(companyId, [projectId, ...(projectIds || [])].filter(Boolean))) return { ok: false, reason: PROJECT_PAUSED, code: 'project_paused' };
     try {
         await aiSwitch.assertAllowed(companyId);
@@ -176,6 +178,11 @@ const patch = async (companyId, runId, set, extra = {}, { onlyIf } = {}) => {
 };
 
 const appendAction = (companyId, runId, entry) => patch(companyId, runId, {}, { $push: { actions: { ...entry, at: new Date() } } });
+
+const settleConnectorRead = (companyId, runId, slot, fields) => MongoDbCrudOpration(companyId, {
+    type: SCHEMA_TYPE.AGENT_RUNS,
+    data: [{ _id: oid(runId) }, { $set: Object.fromEntries(Object.entries(fields).map(([name, value]) => [`connectorReads.$[read].${name}`, value])) }, { arrayFilters: [{ 'read.slot': slot }] }],
+}, 'updateOne');
 
 /* No socket event, unlike patch: a step lands after every node and nothing renders it live. */
 const recordStep = (companyId, runId, step) => MongoDbCrudOpration(companyId, {
@@ -423,4 +430,4 @@ const skillSlugOf = (agent, explicit) => {
     return first.key || first.slug || first.name || 'qa-review';
 };
 
-module.exports = { STATUS, OPEN, TERMINAL, RETENTION_SECONDS, LOOP_DEPTH_EXCEEDED, originDepth, terminalUpdate, canStart, runsToday, skillSlugOf, idempotencyKeyFor, start, create, get, patch, appendAction, recordStep, finish, isRunning, reapStale, stop, recordSpend, list, summary, countsByStatus, pauseAll, stopIn, pausedIn, getAgent, emitAgent, changesFor, executeSkill, monthKey };
+module.exports = { STATUS, OPEN, TERMINAL, RETENTION_SECONDS, LOOP_DEPTH_EXCEEDED, originDepth, terminalUpdate, canStart, runsToday, skillSlugOf, idempotencyKeyFor, start, create, get, patch, appendAction, settleConnectorRead, recordStep, finish, isRunning, reapStale, stop, recordSpend, list, summary, countsByStatus, pauseAll, stopIn, pausedIn, getAgent, emitAgent, changesFor, executeSkill, monthKey };

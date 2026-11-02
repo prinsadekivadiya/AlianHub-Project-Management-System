@@ -1225,6 +1225,12 @@ const schema = {
         rateLimitPerDay: { type: Number, required: false },
         // Overrides the skill's verifier floor (Modules/Agents/engine/confidence.js); null uses the skill's.
         confidenceFloor: { type: Number, required: false },
+        // { state: pending | approved | declined, requestedBy, requestedAt, decidedBy, decidedAt, reason } (Modules/Agents/agentApproval.js); none = approved
+        approval: { type: Object, required: false },
+        // private | shared | everyone (Modules/Agents/agentAudience.js); none = everyone
+        visibility: { type: String, required: false },
+        // { userIds: [], teamIds: [] } when visibility is shared
+        sharedWith: { type: Object, required: false },
         deletedStatusKey: { type: Number, default: 0, required: false },
     },
     agentRuns: {
@@ -1293,7 +1299,7 @@ const schema = {
         tainted: { type: Boolean, required: false },
         // [{ kind: fetch | email | form | webhook | file | passage | client | instruction | connector, ref, at }] — where it came from, never the content
         taintSources: { type: Array, default: undefined, required: false },
-        // [{ action, connector, channelId, state: applied | failed | refused, messages, chars, truncated, reason, error, at }] — one per
+        // [{ action, connector, channelId, connectionId, slot, state: pending | applied | failed | refused, messages, chars, truncated, reason, error, at }] — one per
         // connector read the run tried; the per-run caps are counted from it, and it never holds what was read
         connectorReads: { type: Array, default: undefined, required: false },
         // 'report' for a scheduled report run (no task); absent on a task run
@@ -1334,8 +1340,13 @@ const schema = {
     agentRevisions: {
         agentId: { type: String, required: true },
         n: { type: Number, required: true },
-        // draft | candidate | live | superseded — the only fields that change after creation are state and its timestamps
+        // draft | candidate | live | superseded | declined — the only fields that change after creation are state and its timestamps
         state: { type: String, required: true },
+        // a candidate someone who is not an owner or admin saved, waiting for one of them to promote or decline it
+        requestedApproval: { type: Boolean, required: false },
+        declinedBy: { type: String, required: false },
+        declinedAt: { type: Date, required: false },
+        declineReason: { type: String, required: false },
         // every agent field that affects a run, frozen at creation
         snapshot: { type: Object, required: true },
         // skill keys the revision executes
@@ -1490,6 +1501,10 @@ const schema = {
         declaredHosts: { type: [String], default: undefined, required: false },
         retiredAt: { type: Date, required: false },
         createdBy: { type: String, required: false },
+        // { state: pending | approved | declined, requestedBy, requestedAt, decidedBy, decidedAt, reason } on a skill someone who is not an owner or admin wrote
+        approval: { type: Object, required: false },
+        // { set, requestedBy, requestedAt }: their change to a live skill, applied when an owner or admin approves it
+        pendingChange: { type: Object, required: false },
     },
     agentProposals: {
         agentId: { type: String, required: true },
@@ -1517,6 +1532,10 @@ const schema = {
         auditIds: { type: Array, default: [], required: false },
         // [{ action, ok, channelId, channelName, ts, error, at }] — what the provider answered for each connector change
         delivery: { type: Array, required: false },
+        // The one person who may approve a connector write (Connectors/writes.js).
+        connectionOwner: { type: String, required: false },
+        // Each write of an approval claimed before it is sent, so it is sent once.
+        sendAttempts: { type: Array, required: false },
         cost: { type: Object, required: false },
         // a canned Inbox key (too_many_changes | wrong_tone | needs_person | not_now) or free text, ≤ 200 chars
         declineReason: { type: String, required: false },
@@ -2133,8 +2152,13 @@ const schema = {
     },
     // One row per workspace and connector, or per person and connector when the connection is a person's own
     // (Modules/Agents/connectors). Tokens live in `secrets` by handle, never here.
+    // Rows from before the connector module (task 056) have `connector` and `secretHandles`; module rows have
+    // `provider`, `handles` and the rest of 063's contract section 6. Task 073 migrates the old rows.
     connectorConnections: {
-        connector: { type: String, required: true },
+        connector: { type: String, required: false },
+        companyId: { type: String, required() { return typeof this.provider === 'string'; } },
+        provider: { type: String, required: false },
+        products: { type: [String], default: undefined, required: false },
         // The person a personal connection belongs to; absent on a workspace connection.
         userId: { type: String, required: false },
         // { bot_token: 'sec_…', signing_secret: 'sec_…' } or { refresh_token: 'sec_…', access_token: 'sec_…' }
@@ -2147,13 +2171,20 @@ const schema = {
         // [{ id, name, read, post }] the channels an owner or admin chose and what agents may do in each; a row
         // without the two ticks is from before reading existed and means post only
         allowedChannels: { type: Array, default: [], required: false },
-        // connected | broken, and for a person's connection also pending | revoked
+        // connected | broken, and for a person's connection also pending | reauth_required | revoked
         status: { type: String, default: 'connected', required: false },
         brokenReason: { type: String, required: false },
+        lastError: { type: String, required: false },
         brokenAt: { type: Date, required: false },
-        // What the provider granted, and { email, sub } of the account the person connected
+        // What the provider granted, and the account the person connected: { id, label } on module rows,
+        // { email, sub } on older ones
         scopes: { type: [String], default: undefined, required: false },
         account: { type: Object, required: false },
+        // { source: 'instance' | 'company', appId }: appId is the connector_apps id, null for the instance app
+        app: { type: Object, required: false },
+        // { access: 'sec_…', refresh: 'sec_…' } secrets store handles of a module row
+        handles: { type: Object, required: false },
+        backoffUntil: { type: Date, required: false },
         accessExpiresAt: { type: Date, required: false },
         connectedAt: { type: Date, required: false },
         lastUsedAt: { type: Date, required: false },
@@ -2168,6 +2199,42 @@ const schema = {
         createdBy: { type: String, required: false },
         updatedBy: { type: String, required: false },
         deletedStatusKey: { type: Number, default: 0, required: false },
+    },
+    // A workspace's own OAuth app for one provider; it wins over the instance's CONNECTOR_<ID>_* app (FR-5).
+    connectorApps: {
+        companyId: { type: String, required: true },
+        provider: { type: String, required: true },
+        clientId: { type: String, required: true },
+        secretHandle: { type: String, required: true },
+        // Browser-safe values a provider also needs, such as Google Picker's { apiKey, appId }
+        extra: { type: Object, required: false },
+        setBy: { type: String, required: true },
+        createdAt: { type: Date, required: true },
+        updatedAt: { type: Date, required: true },
+    },
+    // One document per connection, caller and day, incremented in place (FR-28, FR-29).
+    connectorUsage: {
+        companyId: { type: String, required: true },
+        connectionId: { type: String, required: true },
+        userId: { type: String, required: true },
+        // { type: 'agent' | 'mcp', id }
+        actor: { type: Object, required: true },
+        day: { type: String, required: true },
+        reads: { type: Number, default: 0, required: false },
+        writeProposals: { type: Number, default: 0, required: false },
+    },
+    // An owner or admin's daily limit for the workspace, a member or an agent; a field left out falls to the wider
+    // limit, then to the default in Modules/Connectors/quotas.js (FR-29).
+    connectorQuotas: {
+        companyId: { type: String, required: true },
+        // workspace | member | agent
+        scope: { type: String, required: true },
+        targetId: { type: String, default: '', required: false },
+        reads: { type: Number, required: false },
+        writeProposals: { type: Number, required: false },
+        agentReads: { type: Number, required: false },
+        setBy: { type: String, required: true },
+        updatedAt: { type: Date, required: true },
     },
     // Instance-wide, in the global database: patterns the owner added to the instruction guard on top of
     // the built-in list (Modules/AICore/instructionPatterns.js).
@@ -3574,6 +3641,14 @@ const schema = {
             required : false
         },
         selectionField : {
+            type: Boolean,
+            required : false
+        },
+        switchOnly : {
+            type: Boolean,
+            required : false
+        },
+        riskField : {
             type: Boolean,
             required : false
         }
